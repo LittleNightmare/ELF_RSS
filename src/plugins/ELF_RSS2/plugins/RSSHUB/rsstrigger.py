@@ -1,8 +1,7 @@
+from bot import config
+from . import RSS_class, rsshub
 from nonebot import require
 
-from . import RSS_class, rsshub
-
-scheduler = require("nonebot_plugin_apscheduler").scheduler
 
 from nonebot.log import logger
 
@@ -17,6 +16,7 @@ async def check_update(rss: RSS_class.rss):
 
 
 def rss_trigger(times: int, rss: RSS_class.rss):
+    scheduler = require("nonebot_plugin_apscheduler").scheduler
     # 制作一个“time分钟/次”触发器
     trigger = IntervalTrigger(
         minutes=times,

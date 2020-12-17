@@ -1,3 +1,4 @@
+import os
 import shutil
 from pathlib import Path
 
@@ -10,8 +11,7 @@ from bot import config
 
 scheduler = require("nonebot_plugin_apscheduler").scheduler
 # 图片存储目录
-file_path = Path.cwd() / 'data' / 'imgs'
-
+file_path = str(str(Path.cwd()) + os.sep+'data' + os.sep+'imgs')
 
 # file_path = './data/imgs'
 
