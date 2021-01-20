@@ -18,14 +18,14 @@ import nonebot
 import requests
 import unicodedata
 from PIL import Image
-from googletrans import Translator
+from google_trans_new import google_translator
 from nonebot.log import logger
 from pyquery import PyQuery as pq
 from retrying import retry
 
 from bot import config
 from . import RSS_class
-
+from . import rss_baidutrans
 # 存储目录
 file_path = str(str(Path.cwd()) + os.sep+'data' + os.sep)
 # 代理
@@ -52,28 +52,31 @@ async def getRSS(rss: RSS_class.rss) -> list:  # 链接，订阅名
     try:
         # 检查是否存在rss记录
         if os.path.isfile(file_path + (rss.name + '.json')):
+            d = ""
             # 异步获取 xml
             async with httpx.AsyncClient(proxies=Proxy) as client:
-                d = ""
                 try:
                     r = await client.get(rss.geturl(), timeout=30)
                     d = feedparser.parse(r.content)
                 except BaseException as e:
-                    logger.error(e)
-                    if not rss.notrsshub and config.rsshub_backup:
+                    logger.error("抓取订阅 {} 的 RSS 失败，E：{}".format(rss.name,e))
+                    if not re.match(u'[hH][tT]{2}[pP][sS]{0,}://', rss.url, flags=0) and config.rsshub_backup:
                         logger.error('RSSHub :' + config.rsshub + ' 访问失败 ！使用备用RSSHub 地址！')
-                        for rsshub_url in config.rsshub_backup:
+                        for rsshub_url in list(config.rsshub_backup):
                             async with httpx.AsyncClient(proxies=Proxy) as client:
                                 try:
-                                    r = await client.get(rsshub_url + rss.url)
+                                    r = await client.get(rss.geturl(rsshub=rsshub_url))
                                 except Exception as e:
-                                    logger.error('RSSHub :' + rsshub_url + ' 访问失败 ！使用备用RSSHub 地址！')
+                                    logger.error('RSSHub :' + rss.geturl(rsshub=rsshub_url) + ' 访问失败 ！使用备用RSSHub 地址！')
                                     continue
                                 if r.status_code in status_code:
                                     d = feedparser.parse(r.content)
-                                    logger.info(rsshub_url + ' 抓取成功！')
-                                    break
-
+                                    if d.entries :
+                                        logger.info(rss.geturl(rsshub=rsshub_url) + ' 抓取成功！')
+                                        break
+                if not d.entries :
+                    logger.error(rss.name + ' 抓取失败！')
+                    return []
                 change = checkUpdate(d, readRss(rss.name))  # 检查更新
                 if len(change) > 0:
                     writeRss(d, rss.name)  # 写入文件
@@ -149,7 +152,7 @@ async def sendMsg(rss, msg, bot):
 
 
 # 下载图片
-@retry
+@retry(stop_max_attempt_number=5,stop_max_delay=30*1000)
 async def dowimg(url: str, img_proxy: bool) -> str:
     try:
         img_path = file_path + 'imgs' + os.sep
@@ -205,6 +208,7 @@ async def dowimg(url: str, img_proxy: bool) -> str:
                     if len(imgs_name) > 0:
                         # imgs_name = os.getcwd() + re.sub(r'\./|\\', r'/', imgs_name)
                         imgs_name = re.sub(r'\./|\\', r'/', imgs_name)
+                        imgs_name = imgs_name[1:]
                     return imgs_name
                 else:
                     imgs_name = img_path + filename
@@ -214,11 +218,13 @@ async def dowimg(url: str, img_proxy: bool) -> str:
                         imgs_name = re.sub(r'/', r'\\\\', imgs_name)
                     return imgs_name
             except BaseException as e:
-                logger.error('图片下载失败 2 E:' + str(e))
-                return ''
+                logger.error('图片下载失败,将重试 2E:' + str(e))
+                raise BaseException
+                # return ''
     except BaseException as e:
-        logger.error('图片下载失败 1 E:' + str(e))
-        return ''
+        logger.error('图片下载失败,将重试 1E:' + str(e))
+        raise BaseException
+        # return ''
 
 
 async def zipPic(content, name):
@@ -298,7 +304,7 @@ async def checkstr(rss_str: str, img_proxy: bool, translation: bool, only_pic: b
     for img in doc_img.items():
         rss_str_tl = re.sub(re.escape(str(img)), '', rss_str_tl)
         img_path = await dowimg(img.attr("src"), img_proxy)
-        if len(img_path) > 0:
+        if img_path==None or len(img_path) > 0:
             rss_str = re.sub(re.escape(str(img)), r'[CQ:image,file=file:///' + str(img_path) + ']', rss_str)
         else:
             rss_str = re.sub(re.escape(str(img)), r'\n图片走丢啦！\n', rss_str, re.S)
@@ -308,7 +314,7 @@ async def checkstr(rss_str: str, img_proxy: bool, translation: bool, only_pic: b
     for video in doc_video.items():
         rss_str_tl = re.sub(re.escape(str(video)), '', rss_str_tl)
         img_path = await dowimg(video.attr("poster"), img_proxy)
-        if len(img_path) > 0:
+        if img_path==None or len(img_path) > 0:
             rss_str = re.sub(re.escape(str(video)), r'视频封面：[CQ:image,file=file:///' + str(img_path) + ']',
                              rss_str)
         else:
@@ -317,20 +323,19 @@ async def checkstr(rss_str: str, img_proxy: bool, translation: bool, only_pic: b
     # 翻译
     text = ''
     if translation:
-        translator = Translator()
+        translator = google_translator()
         # rss_str_tl = re.sub(r'\n', ' ', rss_str_tl)
         try:
             text = emoji.demojize(rss_str_tl)
             text = re.sub(r':[A-Za-z_]*:', ' ', text)
             if config.usebaidu:
-                from . import rss_baidutrans
                 rss_str_tl = re.sub(r'\n', '百度翻译 ', rss_str_tl)
                 rss_str_tl = unicodedata.normalize('NFC', rss_str_tl)
                 text = emoji.demojize(rss_str_tl)
                 text = re.sub(r':[A-Za-z_]*:', ' ', text)
-                text = '\n翻译(BaiduAPI)：\n' + rss_baidutrans.baidu_translate(re.escape(text))
+                text = '\n翻译(BaiduAPI)：\n' + str(rss_baidutrans.baidu_translate(re.escape(text)))
             else:
-                text = '\n翻译：\n' + translator.translate(re.escape(text), dest='zh-CN').text
+                text = '\n翻译：\n' + str(translator.translate(re.escape(text), lang_tgt='zh'))
             text = re.sub(r'\\', '', text)
             text = re.sub(r'百度翻译', '\n', text)
         except Exception as e:
@@ -357,15 +362,23 @@ def checkUpdate(new, old) -> list:
     for i in a:
         count = 0
         for j in b:
-            if i['id'] == j['id']:
-                count = 1
+            try:
+                if i['id'] == j['id']:
+                    count = 1
+            except:
+                if i['link'] == j['link']:
+                    count = 1
         if count == 0:
             c.insert(0, i)
     for i in c:
         count = 0
         for j in b:
-            if i['id'] == j['id']:
-                count = 1
+            try:
+                if i['id'] == j['id']:
+                    count = 1
+            except:
+                if i['link'] == j['link']:
+                    count = 1
         if count == 1:
             c.remove(i)
     return c
